@@ -1,0 +1,263 @@
+Author: Justin Mau
+LRES 525
+
+
+
+Libraries:
+```{r}
+library(ggplot2)
+library(neonUtilities)
+library(geoNEON)
+library(tidyverse)
+library(terra)
+#library(rhdf5)
+library(httr)
+library(jsonlite)
+library(downloader)
+library(ggplot2)
+library(RStoolbox)
+library(sp)
+library(raster)
+library(neonOS)
+#library(rgdal)
+library(dplyr)
+```
+
+
+Downloading the Vegetation Structure vst product for the UNDE site in 2020-08
+```{r}
+vst <- loadByProduct(dpID="DP1.10098.001", 
+                     site="UNDE",
+                     startdate="2020-08",
+                     enddate="2020-09", 
+                     check.size=F)
+```
+
+
+
+Reads in lat/long and such for the specific plot I'm looking at
+```{r}
+#targetPlot = "UNDE_037"
+targetPlot = "UNDE_065"
+targetPlot_info = vst$vst_perplotperyear[which(vst$vst_perplotperyear$plotID==targetPlot),]
+targetPlot_lat = targetPlot_info$decimalLatitude
+targetPlot_lon = targetPlot_info$decimalLongitude
+targetPlot_northing = targetPlot_info$northing
+targetPlot_easting = targetPlot_info$easting
+```
+
+
+
+
+Loading in all apparent individual trees for the specified plot
+```{r}
+vst.trees <- vst$vst_apparentindividual[which
+                                        (vst$vst_apparentindividual$plotID== targetPlot),]
+
+# creates one table with the known individuals and their relevant information
+vst.trees <- merge(vst.trees, vst$vst_mappingandtagging, by = "individualID")
+vst.trees <- dplyr::select(vst.trees, uid.x, individualID, scientificName, taxonID, growthForm, plantStatus, canopyPosition, plotID.x)
+
+View(vst.trees)
+```
+
+
+
+
+generating simple plots about distribution -------------------------------------------------------------------------
+--------------------------------------------------------------------------------------------------------------------
+Plot for tree counts by species
+```{r}
+tree_counts <- vst.trees %>% count(scientificName)
+
+ggplot(tree_counts, aes(x = scientificName, y = n)) +
+  geom_bar(stat = "identity") +
+  labs(x = "Tree Species", y = "Count", title = "Distribution of Tree Species") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+```
+
+Plot for tree counts by plant status
+```{r}
+tree_counts <- vst.trees %>% count(plantStatus)
+
+ggplot(tree_counts, aes(x = plantStatus, y = n)) +
+  geom_bar(stat = "identity") +
+  labs(x = "Tree Status", y = "Count", title = "Distribution of Tree Status") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+```
+
+Plot for tree counts by canopy position (!)
+```{r}
+tree_counts <- vst.trees %>% count(canopyPosition)
+
+ggplot(tree_counts, aes(x = canopyPosition, y = n)) +
+  geom_bar(stat = "identity") +
+  labs(x = "Canopy Position", y = "Count", title = "Distribution of Tree Canopy Positions") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+```
+
+In plot 065, there are 32 plants in full sun and 25 only partially shaded
+So there should be at least 32 trees identified in the canopy
+Full model only identified about 20
+```{r}
+length(vst.trees$canopyPosition[which(vst.trees$canopyPosition == "Full sun")])
+length(vst.trees$canopyPosition[which(vst.trees$canopyPosition == "Partially shaded")])
+```
+-------------------------------------------------------------------------------
+
+
+
+Loading in tree location data -------------------------------------------------
+-----------------------------------------------------------------------------
+```{r}
+vst.loc <- getLocTOS(data=vst$vst_mappingandtagging, dataProd="vst_mappingandtagging")
+```
+
+
+```{r}
+# uses neonOS to join all these tables together
+veg <- joinTableNEON(vst.loc, 
+                     vst$vst_apparentindividual,
+                     name1="vst_mappingandtagging",
+                     name2="vst_apparentindividual")
+
+# filters out NA values
+veg <- veg[!is.na(veg$adjDecimalLongitude) & !is.na(veg$adjDecimalLongitude), ]
+
+```
+
+
+For just extracting for plot065, this code should be run
+```{r}
+# filters to just specific plot and canopy position
+veg <- veg[which(veg$plotID == "UNDE_065"), ]
+veg <- veg[which(veg$canopyPosition == "Full sun" | veg$canopyPosition == "Partially shaded"), ]
+
+x <- veg$adjDecimalLongitude
+y <- veg$adjDecimalLatitude
+species <- veg$scientificName
+uncertainty <- veg$adjCoordinateUncertainty
+canopyPosition <- veg$canopyPosition
+crownDiameter <- veg$maxCrownDiameter
+
+# creates spatial point to put on the plot
+tree_points <- SpatialPoints(coords = cbind(x, y), proj4string = CRS("+proj=longlat +datum=WGS84"))
+tree_points$species <- species
+tree_points$plotID <- "plot065"
+tree_points$uncertainty <- uncertainty
+tree_points$canopyPosition <- canopyPosition
+tree_points$crownDiameter <- crownDiameter
+
+
+# Convert spatial points to data frame
+tree_data <- as.data.frame(tree_points)
+# Export to CSV
+write.csv(tree_data, paste0("./Tree_Location_Points/tree_locations_", "plot065", ".csv"), row.names = FALSE)
+
+```
+
+OR 
+
+For extracting for ALL plots, this code should be run instead
+```{r}
+
+for (tp in unique(veg$plotID)) {
+  
+  x <- veg$adjDecimalLongitude[which(veg$plotID == tp)]
+  y <- veg$adjDecimalLatitude[which(veg$plotID == tp)]
+  species <- veg$scientificName[which(veg$plotID == tp)]
+  uncertainty <- veg$adjCoordinateUncertainty[which(veg$plotID == tp)]
+  
+  # creates spatial point to put on the plot
+  tree_points <- SpatialPoints(coords = cbind(x, y), proj4string = CRS("+proj=longlat +datum=WGS84"))
+  tree_points$species <- species
+  tree_points$plotID <- tp
+  tree_points$uncertainty <- uncertainty
+  
+  
+  # Convert spatial points to data frame
+  tree_data <- as.data.frame(tree_points)
+  # Export to CSV
+  write.csv(tree_data, paste0("./Tree_Location_Points/tree_locations_", tp, ".csv"), row.names = FALSE)
+  
+}
+```
+-------------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+
+-----------------------------------------------------------------------------
+Now using the code from lab 5 to load in spectroscopy data for UNDE site
+```{r}
+req.aop <- GET("http://data.neonscience.org/api/v0/products/DP3.30010.001")
+avail.aop <- fromJSON(content(req.aop, as="text"), simplifyDataFrame=T, flatten=T)
+
+## note: use round parenthesis to create AND display new variable in the console in one step
+spec.urls <- unlist(avail.aop$data$siteCodes$availableDataUrls)
+
+#2020-08
+sel <- GET(spec.urls[intersect(grep("UNDE", spec.urls),grep("2020-08", spec.urls))])
+
+sel.files <- fromJSON(content(sel, as="text"))
+sel.files$data$files$name
+```
+
+Now finds out the easting/northing values, mostly to figure out which tiles to choose
+```{r}
+print(targetPlot_easting)
+print(targetPlot_northing)
+h <- sel.files$data$files$name[(grep("30[3-4]000_512[2-3]000", sel.files$data$files$name))]
+h <- h[3]
+```
+
+Downloads the tile(s) that contains the plot
+```{r}
+download(url = sel.files$data$files$url[grep(h, sel.files$data$files$name)],
+         paste0("./",h), mode="wb")
+```
+
+Load it in to R to view
+```{r}
+hires <- rast("./mergedRaster.tif")
+plotRGB(hires, stretch="lin")
+```
+
+
+
+Getting the LAI Spectrometer imagery
+(Unfortunately LAI wouldn't work with the model since the model needs 3 bands)
+```{r}
+req.aop <- GET("http://data.neonscience.org/api/v0/products/DP1.00033.001")
+avail.aop <- fromJSON(content(req.aop, as="text"), simplifyDataFrame=T, flatten=T)
+
+## note: use round parenthesis to create AND display new variable in the console in one step
+spec.urls <- unlist(avail.aop$data$siteCodes$availableDataUrls)
+
+#2020-08
+sel <- GET(spec.urls[intersect(grep("UNDE", spec.urls),grep("2020-08", spec.urls))])
+
+sel.files <- fromJSON(content(sel, as="text"))
+sel.files$data$files$name
+
+h <- sel.files$data$files$name[(grep("304000_5123000", sel.files$data$files$name))]
+h
+h <- h[1]
+#download(url = sel.files$data$files$url[grep(h, sel.files$data$files$name)],
+#         paste0("./",h), mode="wb")
+
+download(url = "https://phenocam.nau.edu/webcam/sites/NEON.D05.UNDE.DP1.00033/",
+         "./", mode="wb")
+```
+
+
+
+
+
